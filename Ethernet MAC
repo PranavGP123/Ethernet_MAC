@@ -124,6 +124,7 @@ begin
     $dumpvars(0,testbench);
 
 end
+endmodule
 
 
 //design.sv code
