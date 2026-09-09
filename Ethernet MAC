@@ -1,0 +1,447 @@
+//testbench.sv code
+
+`timescale 1ns/1ps
+
+module testbench;
+
+reg clk;
+reg reset;
+
+reg start;
+reg [7:0] tx_payload;
+reg tx_payload_valid;
+
+wire [7:0] rx_payload;
+wire rx_payload_valid;
+
+wire tx_done;
+wire rx_done;
+
+//----------------------------------------------------
+// Instantiate DUT
+//----------------------------------------------------
+ethernet_mac_top DUT(
+
+    .clk(clk),
+    .reset(reset),
+
+    .start(start),
+
+    .tx_payload(tx_payload),
+    .tx_payload_valid(tx_payload_valid),
+
+    .rx_payload(rx_payload),
+    .rx_payload_valid(rx_payload_valid),
+
+    .tx_done(tx_done),
+    .rx_done(rx_done)
+
+);
+
+//----------------------------------------------------
+// Clock Generation
+//----------------------------------------------------
+always #5 clk = ~clk;
+
+//----------------------------------------------------
+// Stimulus
+//----------------------------------------------------
+initial
+begin
+
+    clk = 0;
+    reset = 1;
+
+    start = 0;
+
+    tx_payload = 8'h00;
+    tx_payload_valid = 0;
+
+    #20;
+    reset = 0;
+
+    //------------------------------------------------
+    // Send one payload byte
+    //------------------------------------------------
+    #10;
+
+    start = 1;
+    tx_payload = 8'h11;
+    tx_payload_valid = 1;
+
+    #10;
+
+    start = 0;
+
+    #10;
+
+    tx_payload_valid = 0;
+
+    //------------------------------------------------
+    // Wait for transmission
+    //------------------------------------------------
+    wait(tx_done);
+
+    $display("--------------------------------");
+    $display("Transmission Complete");
+    $display("--------------------------------");
+
+    #100;
+
+$display("rx_done = %b", rx_done);
+
+$finish;
+    #20;
+
+    $finish;
+
+end
+
+//----------------------------------------------------
+// Monitor received data
+//----------------------------------------------------
+always @(posedge clk)
+begin
+
+    if(rx_payload_valid)
+    begin
+
+        $display("Time=%0t  Received Byte = %h",
+                 $time,
+                 rx_payload);
+
+    end
+
+end
+
+//----------------------------------------------------
+// Waveform Dump
+//----------------------------------------------------
+initial
+begin
+
+    $dumpfile("ethernet_mac.vcd");
+    $dumpvars(0,testbench);
+
+end
+
+
+//design.sv code
+
+`timescale 1ns/1ps
+
+module mac_tx(
+
+    input clk,
+    input reset,
+
+    input start,
+
+    input [7:0] data_in,
+    input data_valid,
+
+    output reg [7:0] tx_data,
+    output reg tx_en,
+    output reg tx_done
+
+);
+
+parameter IDLE      = 2'd0;
+parameter PREAMBLE  = 2'd1;
+parameter PAYLOAD   = 2'd2;
+parameter FINISH    = 2'd3;
+
+reg [1:0] state;
+reg [2:0] preamble_cnt;
+
+always @(posedge clk or posedge reset)
+begin
+
+    if(reset)
+    begin
+
+        state <= IDLE;
+        preamble_cnt <= 0;
+
+        tx_en <= 0;
+        tx_done <= 0;
+        tx_data <= 8'h00;
+
+    end
+
+    else
+    begin
+
+        case(state)
+
+        //---------------------------------
+        IDLE:
+        //---------------------------------
+        begin
+
+            tx_en <= 0;
+            tx_done <= 0;
+
+            if(start)
+            begin
+                preamble_cnt <= 0;
+                state <= PREAMBLE;
+            end
+
+        end
+
+        //---------------------------------
+        PREAMBLE:
+        //---------------------------------
+        begin
+
+            tx_en <= 1;
+
+            if(preamble_cnt < 7)
+            begin
+
+                tx_data <= 8'h55;
+                preamble_cnt <= preamble_cnt + 1;
+
+            end
+
+            else
+            begin
+
+                tx_data <= 8'hD5;
+                state <= PAYLOAD;
+
+            end
+
+        end
+
+        //---------------------------------
+        PAYLOAD:
+        //---------------------------------
+        begin
+
+            tx_en <= 1;
+
+            if(data_valid)
+            begin
+
+                tx_data <= data_in;
+
+            end
+
+            else
+            begin
+
+                state <= FINISH;
+
+            end
+
+        end
+
+        //---------------------------------
+        FINISH:
+        //---------------------------------
+        begin
+
+            tx_en <= 0;
+            tx_done <= 1;
+
+            state <= IDLE;
+
+        end
+
+        endcase
+
+    end
+
+end
+
+endmodule
+
+
+module mac_rx(
+
+    input clk,
+    input reset,
+
+    input [7:0] rx_data,
+    input rx_en,
+
+    output reg [7:0] data_out,
+    output reg data_valid,
+    output reg rx_done
+
+);
+
+parameter IDLE      = 2'd0;
+parameter PREAMBLE  = 2'd1;
+parameter PAYLOAD   = 2'd2;
+parameter FINISH    = 2'd3;
+
+reg [1:0] state;
+reg [2:0] preamble_cnt;
+
+always @(posedge clk or posedge reset)
+begin
+
+    if(reset)
+    begin
+
+        state <= IDLE;
+        preamble_cnt <= 0;
+
+        data_out <= 8'h00;
+        data_valid <= 0;
+        rx_done <= 0;
+
+    end
+
+    else
+    begin
+
+        case(state)
+
+        //--------------------------------
+        //IDLE
+        //--------------------------------
+        IDLE:
+        begin
+
+            data_valid <= 0;
+            rx_done <= 0;
+            preamble_cnt <= 0;
+
+            if(rx_en)
+                state <= PREAMBLE;
+
+        end
+
+        //--------------------------------
+        //PREAMBLE
+        //--------------------------------
+        PREAMBLE:
+        begin
+
+            data_valid <= 0;
+
+            if(rx_data == 8'h55)
+            begin
+                preamble_cnt <= preamble_cnt + 1;
+            end
+
+            else if((rx_data == 8'hD5) && (preamble_cnt == 7))
+            begin
+                // Start receiving payload from NEXT clock
+                state <= PAYLOAD;
+            end
+
+            else
+            begin
+                // Invalid frame
+                state <= IDLE;
+                preamble_cnt <= 0;
+            end
+
+        end
+
+        //--------------------------------
+        //PAYLOAD
+        //--------------------------------
+        PAYLOAD:
+        begin
+
+            if(rx_en)
+            begin
+                data_out <= rx_data;
+                data_valid <= 1;
+            end
+            else
+            begin
+                data_valid <= 0;
+                state <= FINISH;
+            end
+
+        end
+
+        //--------------------------------
+        //FINISH
+        //--------------------------------
+        FINISH:
+        begin
+
+            rx_done <= 1;
+            state <= IDLE;
+
+        end
+
+        endcase
+
+    end
+
+end
+
+endmodule
+
+
+
+module ethernet_mac_top(
+
+    input clk,
+    input reset,
+
+    // Transmitter Interface
+    input start,
+    input [7:0] tx_payload,
+    input tx_payload_valid,
+
+    // Receiver Interface
+    output [7:0] rx_payload,
+    output rx_payload_valid,
+
+    output tx_done,
+    output rx_done
+
+);
+
+    // Internal Ethernet connection
+    wire [7:0] eth_data;
+    wire eth_en;
+
+    //----------------------------------
+    // MAC Transmitter
+    //----------------------------------
+    mac_tx TX(
+
+        .clk(clk),
+        .reset(reset),
+
+        .start(start),
+
+        .data_in(tx_payload),
+        .data_valid(tx_payload_valid),
+
+        .tx_data(eth_data),
+        .tx_en(eth_en),
+        .tx_done(tx_done)
+
+    );
+
+    //----------------------------------
+    // MAC Receiver
+    //----------------------------------
+    mac_rx RX(
+
+        .clk(clk),
+        .reset(reset),
+
+        .rx_data(eth_data),
+        .rx_en(eth_en),
+
+        .data_out(rx_payload),
+        .data_valid(rx_payload_valid),
+        .rx_done(rx_done)
+
+    );
+
+endmodule
+endmodule
