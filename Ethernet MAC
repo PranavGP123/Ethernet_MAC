@@ -445,4 +445,3 @@ module ethernet_mac_top(
     );
 
 endmodule
-endmodule
