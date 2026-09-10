@@ -86,11 +86,14 @@ begin
     $display("Transmission Complete");
     $display("--------------------------------");
 
-    #100;
+    //------------------------------------------------
+    // Wait for reception (catches the pulse directly,
+    // instead of an arbitrary delay that might miss it)
+    //------------------------------------------------
+    wait(rx_done);
 
-$display("rx_done = %b", rx_done);
+    $display("rx_done = %b", rx_done);
 
-$finish;
     #20;
 
     $finish;
@@ -124,6 +127,7 @@ begin
     $dumpvars(0,testbench);
 
 end
+
 endmodule
 
 
@@ -155,6 +159,11 @@ parameter FINISH    = 2'd3;
 reg [1:0] state;
 reg [2:0] preamble_cnt;
 
+// Latched copy of the payload, captured the instant 'start' is seen.
+// PAYLOAD state now uses this instead of relying on data_valid still
+// being asserted many cycles later, after the preamble has finished.
+reg [7:0] payload_latched;
+
 always @(posedge clk or posedge reset)
 begin
 
@@ -167,6 +176,7 @@ begin
         tx_en <= 0;
         tx_done <= 0;
         tx_data <= 8'h00;
+        payload_latched <= 8'h00;
 
     end
 
@@ -186,6 +196,7 @@ begin
             if(start)
             begin
                 preamble_cnt <= 0;
+                payload_latched <= data_in;   // capture payload NOW
                 state <= PREAMBLE;
             end
 
@@ -222,20 +233,8 @@ begin
         begin
 
             tx_en <= 1;
-
-            if(data_valid)
-            begin
-
-                tx_data <= data_in;
-
-            end
-
-            else
-            begin
-
-                state <= FINISH;
-
-            end
+            tx_data <= payload_latched;  // send the captured byte, not a live signal
+            state <= FINISH;
 
         end
 
@@ -310,10 +309,22 @@ begin
 
             data_valid <= 0;
             rx_done <= 0;
-            preamble_cnt <= 0;
 
             if(rx_en)
+            begin
                 state <= PREAMBLE;
+                // rx_data is already valid the same cycle rx_en asserts,
+                // so check/count the FIRST preamble byte right here instead
+                // of losing it and starting the count one cycle late.
+                if(rx_data == 8'h55)
+                    preamble_cnt <= 1;
+                else
+                    preamble_cnt <= 0;
+            end
+            else
+            begin
+                preamble_cnt <= 0;
+            end
 
         end
 
